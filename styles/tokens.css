@@ -1,0 +1,32 @@
+:root {
+  /* Backgrounds */
+  --vault-bg: #0A0A0A;
+  --vault-surface: #111111;
+  --vault-surface-hover: #161616;
+  --vault-sidebar: #0D0D0D;
+
+  /* Borders */
+  --vault-border: #1E1E1E;
+  --vault-border-strong: #2A2A2A;
+
+  /* Text */
+  --vault-text: #F5F5F5;
+  --vault-text-secondary: #9CA3AF;
+  --vault-text-muted: #6B7280;
+
+  /* Accent */
+  --vault-accent: #6366F1;
+  --vault-accent-hover: #5558E3;
+  --vault-accent-subtle: rgba(99, 102, 241, 0.12);
+
+  /* States */
+  --vault-success: #22C55E;
+  --vault-warning: #EAB308;
+  --vault-error: #EF4444;
+
+  /* Radius */
+  --vault-r-card: 12px;
+  --vault-r-btn: 8px;
+  --vault-r-badge: 6px;
+  --vault-r-img: 8px;
+}

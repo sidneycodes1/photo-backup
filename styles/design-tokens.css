@@ -1,0 +1,20 @@
+:root {
+  --bg-primary: #0A0A0A;
+  --bg-surface: #111111;
+  --bg-surface-hover: #161616;
+  --bg-sidebar: #0D0D0D;
+  --border-subtle: #1E1E1E;
+  --border-default: #2A2A2A;
+  --text-primary: #F5F5F5;
+  --text-secondary: #9CA3AF;
+  --text-muted: #6B7280;
+  --accent: #6366F1;
+  --accent-hover: #5558E3;
+  --accent-subtle: rgba(99, 102, 241, 0.12);
+  --success: #22C55E;
+  --warning: #EAB308;
+  --error: #EF4444;
+  --radius-card: 12px;
+  --radius-button: 8px;
+  --radius-badge: 6px;
+}

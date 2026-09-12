@@ -1,0 +1,8 @@
+.env.local
+.env*.local
+node_modules/
+.test-storage/
+.next/
+tsconfig.tsbuildinfo
+dev.out.log
+dev.err.log

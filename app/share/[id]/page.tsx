@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { motion } from 'framer-motion'
 import { Download, AlertTriangle, Lock } from 'lucide-react'
 import { decryptFile } from '@/lib/encryption'
 import { fetchWithRetry } from '@/lib/lighthouse/retrieve'
@@ -25,8 +26,24 @@ export default function SharePage({ params }: SharePageProps) {
   const [shareData, setShareData] = useState<ShareData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [decryptedBlob, setDecryptedBlob] = useState<Blob | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isDecrypting, setIsDecrypting] = useState(false)
+
+  // One object URL per decrypted blob, revoked on blob change/unmount.
+  // (Creating it inline in render leaked a URL on every re-render.)
+  useEffect(() => {
+    if (!decryptedBlob) {
+      setPreviewUrl(null)
+      return
+    }
+    const url = URL.createObjectURL(decryptedBlob)
+    setPreviewUrl(url)
+    return () => {
+      URL.revokeObjectURL(url)
+      setPreviewUrl(null)
+    }
+  }, [decryptedBlob])
 
   useEffect(() => {
     async function loadParams() {
@@ -44,20 +61,14 @@ export default function SharePage({ params }: SharePageProps) {
     async function loadShare() {
       try {
         setIsLoading(true)
-        
-        // Extract key from URL fragment
         const hash = window.location.hash
         const keyMatch = hash.match(/key=([^&]+)/)
         if (!keyMatch) {
           throw new Error('Invalid share link')
         }
-        
         const base64Key = keyMatch[1]
-        // Convert base64url to base64
         const base64 = base64Key.replace(/-/g, '+').replace(/_/g, '/')
         const keyBytes = base64ToBytes(base64)
-        
-        // Import the key
         const crypto = window.crypto
         const shareKey = await crypto.subtle.importKey(
           'raw',
@@ -66,22 +77,11 @@ export default function SharePage({ params }: SharePageProps) {
           false,
           ['decrypt'],
         )
-        
-        // Fetch share metadata from proxy (no auth)
         const data = await supabaseProxy.getSharePublic(validShareId)
         setShareData(data)
-        
-        // Fetch ciphertext from Lighthouse
         const encryptedBlob = await fetchWithRetry(data.shareCid)
-        
-        // Decrypt client-side
         setIsDecrypting(true)
-        const decrypted = await decryptFile(
-          encryptedBlob,
-          shareKey,
-          data.iv,
-          data.mimeType ?? 'application/octet-stream',
-        )
+        const decrypted = await decryptFile(encryptedBlob, shareKey, data.iv, data.mimeType ?? 'application/octet-stream')
         setDecryptedBlob(decrypted)
         setIsDecrypting(false)
       } catch (err) {
@@ -91,13 +91,11 @@ export default function SharePage({ params }: SharePageProps) {
         setIsLoading(false)
       }
     }
-    
     loadShare()
   }, [shareId])
 
   const handleDownload = () => {
     if (!decryptedBlob || !shareData) return
-    
     const objectUrl = URL.createObjectURL(decryptedBlob)
     const anchor = document.createElement('a')
     anchor.href = objectUrl
@@ -106,19 +104,26 @@ export default function SharePage({ params }: SharePageProps) {
     document.body.appendChild(anchor)
     anchor.click()
     anchor.remove()
-    
-    window.setTimeout(() => {
-      URL.revokeObjectURL(objectUrl)
-    }, 1000)
+    window.setTimeout(() => { URL.revokeObjectURL(objectUrl) }, 1000)
   }
 
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#0A0A0A] px-4">
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <span>Loading shared file...</span>
-        </div>
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+          className="flex flex-col items-center gap-4"
+        >
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-vault-accent/10">
+            <Lock className="h-5 w-5 text-vault-accent" />
+          </div>
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <span>Decrypting your shared file...</span>
+          </div>
+        </motion.div>
       </div>
     )
   }
@@ -126,19 +131,32 @@ export default function SharePage({ params }: SharePageProps) {
   if (error || !shareData) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#0A0A0A] px-4">
-        <Card className="w-full max-w-md border-vault-border bg-vault-surface">
-          <CardContent className="flex flex-col items-center gap-4 p-6 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
-              <AlertTriangle className="h-8 w-8 text-destructive" />
-            </div>
-            <div>
-              <h2 className="text-lg font-medium text-vault-text">Link Unavailable</h2>
-              <p className="mt-2 text-sm text-vault-text-muted">
-                This share link has expired, been revoked, or does not exist.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] }}
+        >
+          <Card className="w-full max-w-md border-vault-border bg-vault-surface">
+            <CardContent className="flex flex-col items-center gap-4 p-6 text-center">
+              <motion.div
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                transition={{ delay: 0.1, type: 'spring', damping: 15, stiffness: 200 }}
+                className="flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10"
+              >
+                <AlertTriangle className="h-8 w-8 text-destructive" />
+              </motion.div>
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.3 }}>
+                <div>
+                  <h2 className="text-lg font-medium text-vault-text">Link Unavailable</h2>
+                  <p className="mt-2 text-sm text-vault-text-muted">
+                    This share link has expired, been revoked, or does not exist.
+                  </p>
+                </div>
+              </motion.div>
+            </CardContent>
+          </Card>
+        </motion.div>
       </div>
     )
   }
@@ -151,69 +169,64 @@ export default function SharePage({ params }: SharePageProps) {
       <div className="mx-auto max-w-4xl">
         <Card className="border-vault-border bg-vault-surface">
           <CardContent className="p-6">
-            <div className="mb-6 flex items-center justify-between">
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
+              className="mb-6 flex items-center justify-between"
+            >
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-vault-accent/10">
                   <Lock className="h-5 w-5 text-vault-accent" />
                 </div>
                 <div>
-                  <h1 className="text-lg font-medium text-vault-text">
-                    {shareData.originalFilename ?? 'Shared File'}
-                  </h1>
-                  <p className="text-sm text-vault-text-muted">
-                    Securely shared via Vaultly
-                  </p>
+                  <h1 className="text-lg font-medium text-vault-text">{shareData.originalFilename ?? 'Shared File'}</h1>
+                  <p className="text-sm text-vault-text-muted">Securely shared via Vaultly</p>
                 </div>
               </div>
-              <Button
+              <motion.button
                 onClick={handleDownload}
                 disabled={!decryptedBlob || isDecrypting}
                 className="bg-vault-accent text-vault-bg hover:bg-vault-accent/90"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.97 }}
               >
-                <Download className="mr-2 h-4 w-4" />
-                Download
-              </Button>
-            </div>
-
+                <Download className="mr-2 h-4 w-4" />Download
+              </motion.button>
+            </motion.div>
             {isDecrypting ? (
-              <div className="flex aspect-video items-center justify-center rounded-lg bg-vault-bg">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="flex aspect-video items-center justify-center rounded-lg bg-vault-bg"
+              >
                 <div className="flex items-center gap-3 text-sm text-vault-text-muted">
                   <div className="h-4 w-4 animate-spin rounded-full border-2 border-vault-accent border-t-transparent" />
                   <span>Decrypting...</span>
                 </div>
-              </div>
+              </motion.div>
             ) : decryptedBlob ? (
-              <div className="rounded-lg bg-vault-bg">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.2, duration: 0.3 }}
+                className="rounded-lg bg-vault-bg"
+              >
                 {isImage ? (
-                  <img
-                    src={URL.createObjectURL(decryptedBlob)}
-                    alt={shareData.originalFilename ?? 'Shared image'}
-                    className="h-auto w-full rounded-lg"
-                  />
+                  <img src={previewUrl ?? undefined} alt={shareData.originalFilename ?? 'Shared image'} className="h-auto w-full rounded-lg" />
                 ) : isVideo ? (
-                  <video
-                    src={URL.createObjectURL(decryptedBlob)}
-                    controls
-                    className="h-auto w-full rounded-lg"
-                  />
+                  <video src={previewUrl ?? undefined} controls className="h-auto w-full rounded-lg" />
                 ) : (
                   <div className="flex aspect-video items-center justify-center rounded-lg">
-                    <div className="text-center">
-                      <p className="text-vault-text">File ready for download</p>
-                      <p className="text-sm text-vault-text-muted mt-1">
-                        {shareData.mimeType ?? 'Unknown type'}
-                      </p>
-                    </div>
+                    <div className="text-center"><p className="text-vault-text">File ready for download</p><p className="text-sm text-vault-text-muted mt-1">{shareData.mimeType ?? 'Unknown type'}</p></div>
                   </div>
                 )}
-              </div>
+              </motion.div>
             ) : (
               <div className="flex aspect-video items-center justify-center rounded-lg bg-vault-bg">
                 <div className="text-center">
                   <p className="text-vault-text">Unable to preview</p>
-                  <p className="text-sm text-vault-text-muted mt-1">
-                    Please download to view this file
-                  </p>
+                  <p className="text-sm text-vault-text-muted mt-1">Please download to view this file</p>
                 </div>
               </div>
             )}

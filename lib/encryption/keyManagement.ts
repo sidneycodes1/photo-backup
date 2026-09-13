@@ -1,12 +1,19 @@
-import { sha256 } from '@noble/hashes/sha2.js'
+// Vault-key management: a random per-user AES-GCM master key, wrapped with an
+// AES-KW key derived from the user's vault passphrase via PBKDF2-SHA256
+// (600,000 iterations, OWASP floor) with a random per-vault salt. The server
+// stores only the wrapped blob plus the plaintext salt and can neither unwrap
+// the key nor brute-force it without the passphrase. Trust boundary: the
+// unwrapped master key exists only in browser memory (see vaultSession.ts).
+
 import { supabaseProxy } from '@/lib/api/supabaseProxy'
 import {
   AES_GCM_ALGORITHM,
   AES_GCM_KEY_LENGTH,
   AES_KW_ALGORITHM,
+  PASSPHRASE_MIN_LENGTH,
+  PASSPHRASE_SALT_LENGTH,
   PBKDF2_HASH,
   PBKDF2_ITERATIONS,
-  SALT_LENGTH,
 } from './constants'
 import {
   base64ToBytes,
@@ -16,52 +23,64 @@ import {
   toArrayBuffer,
 } from './helpers'
 
-type EncryptionKeyRow = {
+export type VaultKeyRow = {
   encrypted_key_blob: string
+  key_salt: string | null
   key_version: number
 }
 
-const userKeyPromiseCache = new Map<string, Promise<CryptoKey>>()
+export type PassphraseCheck = {
+  ok: boolean
+  reasons: string[]
+}
 
-async function deriveSeedBytes(privyUserId: string, _userEmbeddedWalletAddress?: string): Promise<Uint8Array> {
+export function generatePassphraseSalt(): Uint8Array {
   const crypto = getWebCrypto()
-  const salt = sha256(encodeUtf8(privyUserId))
+  return crypto.getRandomValues(new Uint8Array(PASSPHRASE_SALT_LENGTH))
+}
 
-  if (salt.length !== SALT_LENGTH) {
-    throw new Error('Failed to derive a 32-byte salt from the Privy user ID')
+export function validatePassphrase(passphrase: string): PassphraseCheck {
+  const reasons: string[] = []
+
+  if (passphrase.length < PASSPHRASE_MIN_LENGTH) {
+    reasons.push(`Use at least ${PASSPHRASE_MIN_LENGTH} characters.`)
   }
 
-  const baseKey = await crypto.subtle.importKey('raw', toArrayBuffer(encodeUtf8(privyUserId)), 'PBKDF2', false, ['deriveBits'])
-  const bits = await crypto.subtle.deriveBits(
+  const classes = [
+    /[a-z]/.test(passphrase),
+    /[A-Z]/.test(passphrase),
+    /[0-9]/.test(passphrase),
+    /[^a-zA-Z0-9]/.test(passphrase),
+  ].filter(Boolean).length
+
+  if (classes < 3) {
+    reasons.push('Include characters from at least 3 of these groups: lowercase, uppercase, digits, symbols.')
+  }
+
+  return { ok: reasons.length === 0, reasons }
+}
+
+export async function deriveWrappingKeyFromPassphrase(
+  passphrase: string,
+  salt: Uint8Array,
+): Promise<CryptoKey> {
+  const crypto = getWebCrypto()
+  const baseKey = await crypto.subtle.importKey('raw', toArrayBuffer(encodeUtf8(passphrase)), 'PBKDF2', false, [
+    'deriveKey',
+  ])
+
+  return crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
-      salt,
+      salt: toArrayBuffer(salt),
       iterations: PBKDF2_ITERATIONS,
       hash: PBKDF2_HASH,
     },
     baseKey,
-    AES_GCM_KEY_LENGTH,
+    { name: AES_KW_ALGORITHM, length: AES_GCM_KEY_LENGTH },
+    false,
+    ['wrapKey', 'unwrapKey'],
   )
-
-  return new Uint8Array(bits)
-}
-
-async function deriveWrappingKey(privyUserId: string, _userEmbeddedWalletAddress?: string): Promise<CryptoKey> {
-  const crypto = getWebCrypto()
-  const seedBytes = await deriveSeedBytes(privyUserId, _userEmbeddedWalletAddress)
-
-  return crypto.subtle.importKey('raw', toArrayBuffer(seedBytes), { name: AES_KW_ALGORITHM }, false, ['wrapKey', 'unwrapKey'])
-}
-
-export async function deriveKeyBytesFromPrivyUser(privyUserId: string, _userEmbeddedWalletAddress?: string): Promise<Uint8Array> {
-  return deriveSeedBytes(privyUserId, _userEmbeddedWalletAddress)
-}
-
-export async function deriveKeyFromPrivyUser(privyUserId: string, _userEmbeddedWalletAddress?: string): Promise<CryptoKey> {
-  const crypto = getWebCrypto()
-  const keyBytes = await deriveSeedBytes(privyUserId, _userEmbeddedWalletAddress)
-
-  return crypto.subtle.importKey('raw', toArrayBuffer(keyBytes), { name: AES_GCM_ALGORITHM }, false, ['encrypt', 'decrypt'])
 }
 
 export async function exportEncryptedKey(key: CryptoKey, wrappingKey: CryptoKey): Promise<string> {
@@ -85,69 +104,67 @@ export async function importEncryptedKey(encryptedKeyBase64: string, wrappingKey
   )
 }
 
-export async function storeUserKey(privyUserId: string, key: CryptoKey, accessToken: string): Promise<void> {
-  await storeUserKeyVersion(privyUserId, key, accessToken, 1)
+async function fetchVaultKeyRow(accessToken: string): Promise<VaultKeyRow | null> {
+  const keyResult = await supabaseProxy.getEncryptionKey(accessToken)
+  return (keyResult.data as VaultKeyRow | null) ?? null
 }
 
-export async function storeUserKeyVersion(privyUserId: string, key: CryptoKey, accessToken: string, keyVersion: number): Promise<void> {
-  const wrappingKey = await deriveWrappingKey(privyUserId)
+/** True when a wrapped key with a passphrase salt exists server-side. Rows
+ *  written by the pre-passphrase scheme (no salt) count as absent: they can
+ *  never be unwrapped again and are overwritten on next setup. */
+export async function hasUsableVaultKey(accessToken: string): Promise<boolean> {
+  const row = await fetchVaultKeyRow(accessToken)
+  return Boolean(row?.encrypted_key_blob && row?.key_salt)
+}
+
+/** First-use setup: validates the passphrase, generates a fresh master key
+ *  and salt, wraps, and stores. Overwrites any pre-passphrase row. */
+export async function setupVaultKey(
+  passphrase: string,
+  confirmPassphrase: string,
+  accessToken: string,
+): Promise<CryptoKey> {
+  if (passphrase !== confirmPassphrase) {
+    throw new Error('Passphrases do not match.')
+  }
+
+  const check = validatePassphrase(passphrase)
+  if (!check.ok) {
+    throw new Error(check.reasons.join(' '))
+  }
+
+  const crypto = getWebCrypto()
+  const key = await crypto.subtle.generateKey(
+    {
+      name: AES_GCM_ALGORITHM,
+      length: AES_GCM_KEY_LENGTH,
+    },
+    true,
+    ['encrypt', 'decrypt'],
+  )
+
+  const salt = generatePassphraseSalt()
+  const wrappingKey = await deriveWrappingKeyFromPassphrase(passphrase, salt)
   const encryptedKeyBlob = await exportEncryptedKey(key, wrappingKey)
 
-  await supabaseProxy.saveEncryptionKey(accessToken, encryptedKeyBlob, keyVersion)
+  await supabaseProxy.saveEncryptionKey(accessToken, encryptedKeyBlob, bytesToBase64(salt), 1)
+  return key
 }
 
-export async function rotateUserKey(privyUserId: string, key: CryptoKey, accessToken: string): Promise<number> {
-  const current = await supabaseProxy.getEncryptionKey(accessToken)
-  const keyVersion = ((current.data as EncryptionKeyRow | null)?.key_version ?? 0) + 1
-  await storeUserKeyVersion(privyUserId, key, accessToken, keyVersion)
-  return keyVersion
-}
+/** Per-session unlock: re-derives the wrapping key and unwraps. A wrong
+ *  passphrase fails closed inside Web Crypto; the error is normalized so
+ *  callers cannot distinguish it from a corrupted row. */
+export async function unlockVaultKey(passphrase: string, accessToken: string): Promise<CryptoKey> {
+  const row = await fetchVaultKeyRow(accessToken)
 
-export async function getUserKey(privyUserId: string, accessToken: string): Promise<CryptoKey | null> {
-  const keyResult = await supabaseProxy.getEncryptionKey(accessToken)
-  const keyRow = keyResult.data as EncryptionKeyRow | null
-
-  if (!keyRow?.encrypted_key_blob) {
-    return null
+  if (!row?.encrypted_key_blob || !row?.key_salt) {
+    throw new Error('No vault key found for this account. Set up a vault passphrase first.')
   }
-
-  const wrappingKey = await deriveWrappingKey(privyUserId)
-  return importEncryptedKey(keyRow.encrypted_key_blob, wrappingKey)
-}
-
-export async function getOrCreateUserKey(privyUserId: string, accessToken: string): Promise<CryptoKey> {
-  const cached = userKeyPromiseCache.get(privyUserId)
-  if (cached) {
-    return cached
-  }
-
-  const promise = (async () => {
-    const existing = await getUserKey(privyUserId, accessToken)
-
-    if (existing) {
-      return existing
-    }
-
-    const crypto = getWebCrypto()
-    const key = await crypto.subtle.generateKey(
-      {
-        name: AES_GCM_ALGORITHM,
-        length: AES_GCM_KEY_LENGTH,
-      },
-      true,
-      ['encrypt', 'decrypt'],
-    )
-
-    await storeUserKey(privyUserId, key, accessToken)
-    return key
-  })()
-
-  userKeyPromiseCache.set(privyUserId, promise)
 
   try {
-    return await promise
-  } catch (error) {
-    userKeyPromiseCache.delete(privyUserId)
-    throw error
+    const wrappingKey = await deriveWrappingKeyFromPassphrase(passphrase, base64ToBytes(row.key_salt))
+    return await importEncryptedKey(row.encrypted_key_blob, wrappingKey)
+  } catch {
+    throw new Error('Incorrect passphrase. Your files remain encrypted and untouched.')
   }
 }

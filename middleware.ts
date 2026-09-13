@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { applyCookiesToResponse, refreshSupabaseSession } from '@/lib/supabase/middleware'
 
 const PROTECTED_PATHS = ['/gallery', '/upload', '/settings', '/restore', '/login']
-const PROTECTED_API_PATHS = ['/api/storage-stats']
+const PROTECTED_API_PATHS: string[] = []
 
 type RateLimitBucket = {
   count: number
@@ -13,14 +13,29 @@ type RateLimitBucket = {
 const rateLimitBuckets = new Map<string, RateLimitBucket>()
 
 const RATE_LIMITS: Record<string, { limit: number; windowMs: number }> = {
-  '/api/storage-stats': {
-    limit: 120,
-    windowMs: 60_000,
-  },
   '/api/supabase-proxy': {
     limit: 30,
     windowMs: 60_000,
   },
+  '/api/supabase-proxy:get_share_public': {
+    limit: 10,
+    windowMs: 60_000,
+  },
+  '/api/lighthouse-upload': {
+    limit: 20,
+    windowMs: 60_000,
+  },
+}
+
+async function getSupabaseProxyOperation(request: NextRequest): Promise<string | null> {
+  if (request.method !== 'POST') return null
+  try {
+    const cloned = request.clone()
+    const body = (await cloned.json()) as { operation?: unknown }
+    return typeof body.operation === 'string' ? body.operation : null
+  } catch {
+    return null
+  }
 }
 
 async function verifyPrivyToken(token: string) {
@@ -31,6 +46,9 @@ async function verifyPrivyToken(token: string) {
     throw new Error('Missing PRIVY_VERIFICATION_KEY or NEXT_PUBLIC_PRIVY_APP_ID')
   }
 
+  // Assumed JWT algorithm is ES256 (Privy's current signing algorithm). If
+  // Privy rotates to a different alg, update the importSPKI call below —
+  // verification will fail closed (401), not silently accept.
   const publicKey = await importSPKI(verificationKey, 'ES256')
   return jwtVerify(token, publicKey, {
     issuer: 'privy.io',
@@ -92,13 +110,37 @@ export async function middleware(request: NextRequest) {
   const isProtected = isProtectedPath(pathname)
   const isProtectedApi = isProtectedApiPath(pathname)
   const isSupabaseProxy = pathname === '/api/supabase-proxy'
+  const isLighthouseUpload = pathname === '/api/lighthouse-upload'
 
   // Ignore static assets or simple API routes that aren't protected
   // Also allow public share pages and supabase-proxy (auth handled internally)
-  if (pathname.startsWith('/_next') || pathname.startsWith('/share') || pathname === '/api/supabase-proxy' || (pathname.startsWith('/api') && !isProtectedApiPath(pathname)) || pathname === '/favicon.ico' || pathname === '/robots.txt') {
-    // Apply rate limiting to unauthenticated supabase-proxy requests
+  if (pathname.startsWith('/_next') || pathname.startsWith('/share') || isSupabaseProxy || isLighthouseUpload || (pathname.startsWith('/api') && !isProtectedApiPath(pathname)) || pathname === '/favicon.ico' || pathname === '/robots.txt') {
     if (isSupabaseProxy && !privyToken) {
+      const operation = await getSupabaseProxyOperation(request)
+      const rateLimitPath =
+        operation === 'get_share_public' ? '/api/supabase-proxy:get_share_public' : pathname
       const rateLimitKey = getRateLimitKey(request, null)
+      const rateLimit = applyRateLimit(rateLimitKey, rateLimitPath)
+
+      if (!rateLimit.allowed) {
+        const response = NextResponse.json(
+          {
+            success: false,
+            error: 'Too many requests',
+          },
+          {
+            status: 429,
+            headers: {
+              'Retry-After': String(rateLimit.retryAfterSeconds),
+            },
+          },
+        )
+        return applyCookiesToResponse(response, cookiesToSet)
+      }
+    }
+
+    if (isLighthouseUpload) {
+      const rateLimitKey = getRateLimitKey(request, privyToken ?? null)
       const rateLimit = applyRateLimit(rateLimitKey, pathname)
 
       if (!rateLimit.allowed) {
@@ -117,6 +159,7 @@ export async function middleware(request: NextRequest) {
         return applyCookiesToResponse(response, cookiesToSet)
       }
     }
+
     const response = NextResponse.next()
     return applyCookiesToResponse(response, cookiesToSet)
   }
@@ -164,28 +207,6 @@ export async function middleware(request: NextRequest) {
       return applyCookiesToResponse(response, cookiesToSet)
     } catch {
       const response = NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 })
-      return applyCookiesToResponse(response, cookiesToSet)
-    }
-  }
-
-  // Apply rate limiting to unauthenticated supabase-proxy requests (get_share_public)
-  if (pathname === '/api/supabase-proxy' && !privyToken) {
-    const rateLimitKey = getRateLimitKey(request, null)
-    const rateLimit = applyRateLimit(rateLimitKey, pathname)
-
-    if (!rateLimit.allowed) {
-      const response = NextResponse.json(
-        {
-          success: false,
-          error: 'Too many requests',
-        },
-        {
-          status: 429,
-          headers: {
-            'Retry-After': String(rateLimit.retryAfterSeconds),
-          },
-        },
-      )
       return applyCookiesToResponse(response, cookiesToSet)
     }
   }

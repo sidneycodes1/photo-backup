@@ -1,3 +1,8 @@
+// File encryption: AES-256-GCM in Web Crypto, single-shot at/below CHUNK_SIZE
+// and per-chunk IV records above it, plus SHA-256 for dedup. Trust boundary:
+// runs entirely in the browser — plaintext and the vault key never leave the
+// device; only ciphertext and the (first) IV go to the upload route and DB.
+
 import { sha256 } from '@noble/hashes/sha2.js'
 import { CHUNK_SIZE, AES_GCM_IV_LENGTH } from './constants'
 import {

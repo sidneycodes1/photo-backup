@@ -4,11 +4,13 @@ import { useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Shield, Calendar, Layers3, Loader2 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
+import { useEncryption } from '@/hooks/useEncryption'
 import { useGallery } from '@/hooks/useGallery'
 import { Button } from '@/components/ui/button'
 import { GalleryGrid } from '@/components/gallery/GalleryGrid'
 import { GalleryItemModal } from '@/components/gallery/GalleryItemModal'
 import { LoginModal } from '@/components/auth/LoginModal'
+import { VaultUnlock } from '@/components/auth/VaultUnlock'
 import { GalleryPermissionBanner } from '@/components/auth/GalleryPermissionBanner'
 import { VaultTopBar } from '@/components/layout/VaultTopBar'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -45,6 +47,7 @@ function ToggleButton({
 
 export default function RootPage() {
   const { ready, authenticated } = useAuth()
+  const { vaultStatus } = useEncryption()
   
   // Modal & sheet states
   const [showLoginModal, setShowLoginModal] = useState(false)
@@ -129,6 +132,29 @@ export default function RootPage() {
             <GalleryPermissionBanner />
           </motion.main>
 
+        ) : vaultStatus !== 'ready' ? (
+
+          /* SCREEN 2: VAULT UNLOCK — the gallery stays unmounted until the
+             in-memory vault key is available (setup on first use). */
+          <motion.div
+            key="vault-unlock"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25, ease: 'easeInOut' }}
+          >
+            {vaultStatus === 'idle' ? (
+              <div className="flex min-h-screen items-center justify-center bg-[#0A0A0A] px-4">
+                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                  <span>Checking vault status...</span>
+                </div>
+              </div>
+            ) : (
+              <VaultUnlock mode={vaultStatus} />
+            )}
+          </motion.div>
+
         ) : (
 
           /* SCREEN 3: VAULT / GALLERY */
@@ -137,7 +163,7 @@ export default function RootPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.25, ease: 'easeInOut' }}
+            transition={{ duration: 0.25, ease: [0.25, 0.46, 0.45, 0.94] }}
             className="pl-60 pt-16 min-h-screen bg-[#0A0A0A]"
           >
             <Sidebar />
@@ -149,11 +175,16 @@ export default function RootPage() {
             />
 
             {/* Search Sorting and Filtering Controls */}
-            <section className="flex flex-wrap items-center gap-4 rounded-2xl border border-[#1A1A1A] bg-[#111111]/40 backdrop-blur-md p-4 animate-in fade-in-50 duration-300">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono uppercase tracking-wider">
+            <section className="flex flex-wrap items-center gap-4 rounded-2xl border border-[#1A1A1A] bg-[#111111]/40 backdrop-blur-md p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+                className="flex items-center gap-2 text-xs text-muted-foreground font-mono uppercase tracking-wider"
+              >
                 <Calendar className="h-4 w-4 text-primary" />
                 Sort
-              </div>
+              </motion.div>
               <ToggleButton active={sortOrder === 'newest'} onClick={() => setSortOrder('newest')}>
                 Newest
               </ToggleButton>

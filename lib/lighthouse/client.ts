@@ -1,4 +1,3 @@
-import { supabaseProxy } from '@/lib/api/supabaseProxy'
 import { storageProvider } from './provider'
 
 export async function uploadToLighthouse(
@@ -11,24 +10,26 @@ export async function uploadToLighthouse(
     return uploadToMockStorage(encryptedBlob, filename, accessToken)
   }
 
-  const result = await supabaseProxy.getLighthouseKey(accessToken)
-  const apiKey = result.apiKey as string | undefined
-  if (!apiKey) {
-    throw new Error('Lighthouse API key not available')
+  const formData = new FormData()
+  formData.append('file', encryptedBlob, filename)
+  formData.append('token', accessToken)
+
+  const response = await fetch('/api/lighthouse-upload', {
+    method: 'POST',
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: 'Upload failed' }))
+    throw new Error(typeof err.error === 'string' ? err.error : 'Upload failed')
   }
 
-  const arrayBuffer = await encryptedBlob.arrayBuffer()
-  const buffer = Buffer.from(arrayBuffer)
-
-  const lighthouse = (await import('@lighthouse-web3/sdk')).default
-  const response = await lighthouse.uploadBuffer(buffer, apiKey)
-
-  const cid = response?.data?.Hash
-  if (!cid) {
-    throw new Error('Upload failed - no CID returned from Lighthouse')
+  const body = (await response.json()) as { cid?: string }
+  if (!body.cid) {
+    throw new Error('Upload failed')
   }
 
-  return cid
+  return body.cid
 }
 
 export function getGatewayUrl(cid: string): string {

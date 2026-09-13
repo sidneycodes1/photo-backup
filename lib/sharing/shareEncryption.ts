@@ -1,3 +1,8 @@
+// Share crypto helpers: per-share key generate/export/import and
+// decrypt-then-re-encrypt for a new share CID, with fragment encode/decode.
+// Trust boundary: same as shareService — keys live in browser memory and URL
+// fragments; only the re-encrypted CID + IV are ever sent to the server.
+
 import { generateIV, encryptFile, decryptFile } from '@/lib/encryption'
 import { bytesToBase64, base64ToBytes, getWebCrypto, toArrayBuffer } from '@/lib/encryption/helpers'
 import { fetchEncryptedBlob } from '@/lib/lighthouse/retrieve'

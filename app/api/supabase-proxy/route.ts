@@ -1,10 +1,14 @@
-// This route uses the admin client and bypasses RLS.
-// Authorization is enforced here via privy_user_id lookups on every operation.
-// RLS policies on the underlying tables are defense-in-depth only and are not the primary access control.
+// Supabase proxy: the only privileged database path. Verifies the Privy JWT
+// (jose + Privy JWKS), resolves users.id from privy_user_id, and scopes every
+// operation by that owner with the service-role admin client. Trust boundary:
+// this route bypasses RLS by design, so its token check + ownership scoping IS
+// the access control; RLS policies are defense-in-depth only.
 
 import { NextRequest, NextResponse } from 'next/server'
+import { ZodError } from 'zod'
 import { verifyPrivyToken } from '@/lib/auth/verifyPrivyToken'
 import { getAdminClient } from '@/lib/supabase/admin'
+import { isProxyOperation, parseProxyPayload } from '@/lib/validations/proxy'
 import type { BackupRecord } from '@/types'
 
 type BackupRow = {
@@ -43,6 +47,33 @@ function toBackupRecord(row: BackupRow): BackupRecord {
   }
 }
 
+function proxyError(message: string, status: number) {
+  return NextResponse.json({ error: message }, { status })
+}
+
+function logProxyFailure(context: string, error: unknown) {
+  console.error(`[API] ${context}:`, error)
+}
+
+async function resolveUserId(supabase: ReturnType<typeof getAdminClient>, privyUserId: string) {
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('id')
+    .eq('privy_user_id', privyUserId)
+    .maybeSingle()
+
+  if (error) {
+    logProxyFailure('resolveUserId', error)
+    return { user: null, response: proxyError('Something went wrong', 500) }
+  }
+
+  if (!user) {
+    return { user: null, response: proxyError('User not found', 404) }
+  }
+
+  return { user, response: null }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json().catch(() => null)) as {
@@ -51,41 +82,47 @@ export async function POST(request: NextRequest) {
       payload?: Record<string, unknown>
     } | null
 
-    if (!body?.operation) {
-      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    if (!body?.operation || !isProxyOperation(body.operation)) {
+      return proxyError('Invalid request', 400)
     }
 
     const { token, operation, payload } = body
     console.log(`[API] Operation: ${operation}`)
-    
-    // get_share_public is the only operation that doesn't require authentication
+
     if (operation === 'get_share_public') {
-      const shareId = typeof payload?.shareId === 'string' ? payload.shareId.trim() : ''
-      if (!shareId) {
-        return NextResponse.json({ error: 'This link is no longer available' }, { status: 404 })
+      let sharePayload: ReturnType<typeof parseProxyPayload<'get_share_public'>>
+      try {
+        sharePayload = parseProxyPayload('get_share_public', payload)
+      } catch (error) {
+        if (error instanceof ZodError) {
+          return proxyError('This link is no longer available', 404)
+        }
+        throw error
       }
 
       const supabase = getAdminClient()
       const { data: share, error } = await supabase
         .from('shares')
         .select('share_cid, iv, mime_type, original_filename, revoked_at, expires_at, view_count')
-        .eq('id', shareId)
+        .eq('id', sharePayload.shareId)
         .maybeSingle()
 
       if (error || !share) {
-        return NextResponse.json({ error: 'This link is no longer available' }, { status: 404 })
+        return proxyError('This link is no longer available', 404)
       }
 
-      // Check if share is revoked or expired
       if (share.revoked_at || new Date(share.expires_at) < new Date()) {
-        return NextResponse.json({ error: 'This link is no longer available' }, { status: 404 })
+        return proxyError('This link is no longer available', 404)
       }
 
-      // Increment view count
-      await supabase
-        .from('shares')
-        .update({ view_count: (share as any).view_count + 1 })
-        .eq('id', shareId)
+      // Best-effort atomic increment: a failed count must never break the
+      // share view itself, so RPC errors are logged and ignored.
+      const { error: viewCountError } = await supabase.rpc('increment_share_view_count', {
+        p_share_id: sharePayload.shareId,
+      })
+      if (viewCountError) {
+        logProxyFailure('get_share_public view_count', viewCountError)
+      }
 
       return NextResponse.json({
         shareCid: share.share_cid,
@@ -95,28 +132,29 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    if (!body?.token) {
-      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+    if (!token) {
+      return proxyError('Invalid request', 400)
     }
 
-    const privyUserId = await verifyPrivyToken(body.token)
+    const privyUserId = await verifyPrivyToken(token)
     const supabase = getAdminClient()
 
     if (operation === 'upsert_user') {
-      const email = typeof payload?.email === 'string' ? payload.email : null
-      console.log(`[API] upsert_user: privyUserId=${privyUserId}, email=${email}`)
+      const { email } = parseProxyPayload('upsert_user', payload)
+      console.log(`[API] upsert_user: privyUserId=${privyUserId}, email=${email ?? null}`)
       const { error } = await supabase.from('users').upsert(
-        { privy_user_id: privyUserId, email, updated_at: new Date().toISOString() },
-        { onConflict: 'privy_user_id' }
+        { privy_user_id: privyUserId, email: email ?? null, updated_at: new Date().toISOString() },
+        { onConflict: 'privy_user_id' },
       )
       if (error) {
-        console.error(`[API] upsert_user error:`, error)
-        return NextResponse.json({ error: error.message }, { status: 500 })
+        logProxyFailure('upsert_user', error)
+        return proxyError('Something went wrong', 500)
       }
       return NextResponse.json({ success: true })
     }
 
     if (operation === 'get_user') {
+      parseProxyPayload('get_user', payload)
       console.log(`[API] get_user: privyUserId=${privyUserId}`)
       const { data, error } = await supabase
         .from('users')
@@ -124,32 +162,26 @@ export async function POST(request: NextRequest) {
         .eq('privy_user_id', privyUserId)
         .maybeSingle()
       if (error) {
-        console.error(`[API] get_user error:`, error)
-        return NextResponse.json({ error: error.message }, { status: 500 })
+        logProxyFailure('get_user', error)
+        return proxyError('Something went wrong', 500)
       }
       return NextResponse.json({ data })
     }
 
     if (operation === 'get_backups') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const queryPayload = parseProxyPayload('get_backups', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
-      const offset = typeof payload?.offset === 'number' ? payload.offset : 0
-      const limit = typeof payload?.limit === 'number' ? payload.limit : 40
-      const sortOrder = payload?.sortOrder === 'oldest' ? 'oldest' : 'newest'
-      const mediaFilter =
-        payload?.mediaFilter === 'photos' || payload?.mediaFilter === 'videos'
-          ? (payload.mediaFilter as 'photos' | 'videos')
-          : 'all'
+      const offset = queryPayload.offset ?? 0
+      const limit = queryPayload.limit ?? 40
+      const sortOrder = queryPayload.sortOrder ?? 'newest'
+      const mediaFilter = queryPayload.mediaFilter ?? 'all'
 
       let query = supabase
         .from('backups')
         .select('id, user_id, cid, original_filename, original_hash, mime_type, encrypted_size, original_size, iv, thumbnail_cid, metadata_encrypted, created_at, updated_at')
-        .eq('user_id', user.id)
+        .eq('user_id', resolved.user!.id)
         .is('deleted_at', null)
         .order('created_at', { ascending: sortOrder === 'oldest' })
         .range(offset, offset + limit - 1)
@@ -161,265 +193,233 @@ export async function POST(request: NextRequest) {
       }
 
       const { data, error } = await query
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (error) {
+        logProxyFailure('get_backups', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data: (data ?? []).map((row) => toBackupRecord(row as BackupRow)) })
     }
 
     if (operation === 'check_duplicate') {
-      const originalHash = typeof payload?.originalHash === 'string'
-        ? payload.originalHash
-        : ''
-      if (!originalHash) return NextResponse.json({ data: null })
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ data: null })
+      const { originalHash } = parseProxyPayload('check_duplicate', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return NextResponse.json({ data: null })
 
       const { data } = await supabase
         .from('backups')
         .select('id, original_hash')
-        .eq('user_id', user.id)
+        .eq('user_id', resolved.user!.id)
         .eq('original_hash', originalHash)
         .maybeSingle()
       return NextResponse.json({ data: data ?? null })
     }
 
     if (operation === 'get_storage_stats') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ data: [] })
+      parseProxyPayload('get_storage_stats', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return NextResponse.json({ data: [] })
 
       const { data, error } = await supabase
         .from('backups')
         .select('encrypted_size, original_size, mime_type')
-        .eq('user_id', user.id)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+        .eq('user_id', resolved.user!.id)
+      if (error) {
+        logProxyFailure('get_storage_stats', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data })
     }
 
     if (operation === 'insert_backup') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const backupPayload = parseProxyPayload('insert_backup', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { data, error } = await supabase
         .from('backups')
-        .insert({ ...payload, user_id: user.id })
+        .insert({
+          user_id: resolved.user!.id,
+          cid: backupPayload.cid,
+          iv: backupPayload.iv,
+          mime_type: backupPayload.mime_type,
+          encrypted_size: backupPayload.encrypted_size,
+          original_size: backupPayload.original_size,
+          original_filename: backupPayload.original_filename,
+          original_hash: backupPayload.original_hash,
+          thumbnail_cid: backupPayload.thumbnail_cid ?? null,
+          metadata_encrypted: backupPayload.metadata_encrypted ?? null,
+        })
         .select('*')
         .maybeSingle()
-      if (error || !data) return NextResponse.json({ error: error?.message ?? 'Failed to save backup' }, { status: 500 })
+      if (error || !data) {
+        logProxyFailure('insert_backup', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data: toBackupRecord(data as BackupRow) })
     }
 
     if (operation === 'delete_backup') {
-      const backupId = typeof payload?.backupId === 'string' ? payload.backupId.trim() : ''
-      if (!backupId) {
-        return NextResponse.json({ error: 'Missing backupId' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const { backupId } = parseProxyPayload('delete_backup', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { error } = await supabase
         .from('backups')
         .update({ deleted_at: new Date().toISOString() })
         .eq('id', backupId)
-        .eq('user_id', user.id)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+        .eq('user_id', resolved.user!.id)
+      if (error) {
+        logProxyFailure('delete_backup', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ success: true })
     }
 
     if (operation === 'get_trash') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const trashPayload = parseProxyPayload('get_trash', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
-      const offset = typeof payload?.offset === 'number' ? payload.offset : 0
-      const limit = typeof payload?.limit === 'number' ? payload.limit : 40
+      const offset = trashPayload.offset ?? 0
+      const limit = trashPayload.limit ?? 40
 
       const { data, error } = await supabase
         .from('backups')
         .select('id, user_id, cid, original_filename, original_hash, mime_type, encrypted_size, original_size, iv, thumbnail_cid, metadata_encrypted, created_at, updated_at, deleted_at')
-        .eq('user_id', user.id)
+        .eq('user_id', resolved.user!.id)
         .not('deleted_at', 'is', null)
         .order('deleted_at', { ascending: false })
         .range(offset, offset + limit - 1)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (error) {
+        logProxyFailure('get_trash', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data: (data ?? []).map((row) => toBackupRecord(row as BackupRow)) })
     }
 
     if (operation === 'restore_backup') {
-      const backupId = typeof payload?.backupId === 'string' ? payload.backupId.trim() : ''
-      if (!backupId) {
-        return NextResponse.json({ error: 'Missing backupId' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const { backupId } = parseProxyPayload('restore_backup', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { error } = await supabase
         .from('backups')
         .update({ deleted_at: null })
         .eq('id', backupId)
-        .eq('user_id', user.id)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+        .eq('user_id', resolved.user!.id)
+      if (error) {
+        logProxyFailure('restore_backup', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ success: true })
     }
 
     if (operation === 'hard_delete_backup') {
-      const backupId = typeof payload?.backupId === 'string' ? payload.backupId.trim() : ''
-      if (!backupId) {
-        return NextResponse.json({ error: 'Missing backupId' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const { backupId } = parseProxyPayload('hard_delete_backup', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { error } = await supabase
         .from('backups')
         .delete()
         .eq('id', backupId)
-        .eq('user_id', user.id)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+        .eq('user_id', resolved.user!.id)
+      if (error) {
+        logProxyFailure('hard_delete_backup', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ success: true })
     }
 
     if (operation === 'create_album') {
-      const name = typeof payload?.name === 'string' ? payload.name.trim() : ''
-      if (!name) {
-        return NextResponse.json({ error: 'Missing album name' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const { name } = parseProxyPayload('create_album', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { data, error } = await supabase
         .from('albums')
-        .insert({ user_id: user.id, name })
+        .insert({ user_id: resolved.user!.id, name })
         .select('*')
         .maybeSingle()
-      if (error || !data) return NextResponse.json({ error: error?.message ?? 'Failed to create album' }, { status: 500 })
+      if (error || !data) {
+        logProxyFailure('create_album', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data })
     }
 
     if (operation === 'list_albums') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      parseProxyPayload('list_albums', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { data, error } = await supabase
         .from('albums')
         .select('*')
-        .eq('user_id', user.id)
+        .eq('user_id', resolved.user!.id)
         .order('created_at', { ascending: false })
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (error) {
+        logProxyFailure('list_albums', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data: data ?? [] })
     }
 
     if (operation === 'add_to_album') {
-      const albumId = typeof payload?.albumId === 'string' ? payload.albumId.trim() : ''
-      const backupId = typeof payload?.backupId === 'string' ? payload.backupId.trim() : ''
-      if (!albumId || !backupId) {
-        return NextResponse.json({ error: 'Missing albumId or backupId' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const { albumId, backupId } = parseProxyPayload('add_to_album', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { error } = await supabase
         .from('album_backups')
         .insert({ album_id: albumId, backup_id: backupId })
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (error) {
+        logProxyFailure('add_to_album', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ success: true })
     }
 
     if (operation === 'remove_from_album') {
-      const albumId = typeof payload?.albumId === 'string' ? payload.albumId.trim() : ''
-      const backupId = typeof payload?.backupId === 'string' ? payload.backupId.trim() : ''
-      if (!albumId || !backupId) {
-        return NextResponse.json({ error: 'Missing albumId or backupId' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const { albumId, backupId } = parseProxyPayload('remove_from_album', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { error } = await supabase
         .from('album_backups')
         .delete()
         .eq('album_id', albumId)
         .eq('backup_id', backupId)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (error) {
+        logProxyFailure('remove_from_album', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ success: true })
     }
 
     if (operation === 'get_album_backups') {
-      const albumId = typeof payload?.albumId === 'string' ? payload.albumId.trim() : ''
-      if (!albumId) {
-        return NextResponse.json({ error: 'Missing albumId' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const { albumId } = parseProxyPayload('get_album_backups', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { data: album } = await supabase
         .from('albums')
         .select('id')
         .eq('id', albumId)
-        .eq('user_id', user.id)
+        .eq('user_id', resolved.user!.id)
         .maybeSingle()
-      if (!album) return NextResponse.json({ error: 'Album not found' }, { status: 404 })
+      if (!album) return proxyError('Album not found', 404)
 
       const { data, error } = await supabase
         .from('album_backups')
         .select('backup_id')
         .eq('album_id', albumId)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (error) {
+        logProxyFailure('get_album_backups', error)
+        return proxyError('Something went wrong', 500)
+      }
 
-      const backupIds = (data ?? []).map((row: any) => row.backup_id)
-
+      const backupIds = (data ?? []).map((row: { backup_id: string }) => row.backup_id)
       if (backupIds.length === 0) {
         return NextResponse.json({ data: [] })
       }
@@ -430,30 +430,33 @@ export async function POST(request: NextRequest) {
         .in('id', backupIds)
         .is('deleted_at', null)
         .order('created_at', { ascending: false })
-      if (backupsError) return NextResponse.json({ error: backupsError.message }, { status: 500 })
+      if (backupsError) {
+        logProxyFailure('get_album_backups backups', backupsError)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data: (backups ?? []).map((row) => toBackupRecord(row as BackupRow)) })
     }
 
     if (operation === 'get_activity') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const activityPayload = parseProxyPayload('get_activity', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
-      const limit = typeof payload?.limit === 'number' ? payload.limit : 50
+      const limit = activityPayload.limit ?? 50
 
       const { data: backups, error: backupsError } = await supabase
         .from('backups')
         .select('id, original_filename, created_at, deleted_at')
-        .eq('user_id', user.id)
+        .eq('user_id', resolved.user!.id)
         .order('created_at', { ascending: false })
         .limit(limit)
 
-      if (backupsError) return NextResponse.json({ error: backupsError.message }, { status: 500 })
+      if (backupsError) {
+        logProxyFailure('get_activity', backupsError)
+        return proxyError('Something went wrong', 500)
+      }
 
-      const activities = (backups ?? []).map((row: any) => ({
+      const activities = (backups ?? []).map((row: { id: string; original_filename: string | null; created_at: string; deleted_at: string | null }) => ({
         type: row.deleted_at ? 'deleted' : 'uploaded',
         filename: row.original_filename ?? 'Untitled',
         timestamp: row.deleted_at || row.created_at,
@@ -464,156 +467,128 @@ export async function POST(request: NextRequest) {
     }
 
     if (operation === 'create_share') {
-      const backupId = typeof payload?.backupId === 'string' ? payload.backupId.trim() : ''
-      const shareCid = typeof payload?.shareCid === 'string' ? payload.shareCid.trim() : ''
-      const iv = typeof payload?.iv === 'string' ? payload.iv.trim() : ''
-      const mimeType = typeof payload?.mimeType === 'string' ? payload.mimeType : null
-      const originalFilename = typeof payload?.originalFilename === 'string' ? payload.originalFilename : null
-      const expiresInHours = typeof payload?.expiresInHours === 'number' ? payload.expiresInHours : 24
-
-      if (!backupId || !shareCid || !iv) {
-        return NextResponse.json({ error: 'Missing backupId, shareCid, or iv' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const sharePayload = parseProxyPayload('create_share', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { data: backup } = await supabase
         .from('backups')
         .select('id')
-        .eq('id', backupId)
-        .eq('user_id', user.id)
+        .eq('id', sharePayload.backupId)
+        .eq('user_id', resolved.user!.id)
         .maybeSingle()
-      if (!backup) return NextResponse.json({ error: 'Backup not found' }, { status: 404 })
+      if (!backup) return proxyError('Backup not found', 404)
 
+      const expiresInHours = sharePayload.expiresInHours ?? 24
       const expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000).toISOString()
 
       const { data, error } = await supabase
         .from('shares')
         .insert({
-          backup_id: backupId,
-          owner_user_id: user.id,
-          share_cid: shareCid,
-          iv: iv,
-          mime_type: mimeType,
-          original_filename: originalFilename,
+          backup_id: sharePayload.backupId,
+          owner_user_id: resolved.user!.id,
+          share_cid: sharePayload.shareCid,
+          iv: sharePayload.iv,
+          mime_type: sharePayload.mimeType ?? null,
+          original_filename: sharePayload.originalFilename ?? null,
           expires_at: expiresAt,
         })
         .select('id')
         .maybeSingle()
-      if (error || !data) return NextResponse.json({ error: error?.message ?? 'Failed to create share' }, { status: 500 })
+      if (error || !data) {
+        logProxyFailure('create_share', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data })
     }
 
     if (operation === 'list_shares') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      parseProxyPayload('list_shares', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { data, error } = await supabase
         .from('shares')
         .select('id, backup_id, original_filename, expires_at, revoked_at, view_count, created_at')
-        .eq('owner_user_id', user.id)
+        .eq('owner_user_id', resolved.user!.id)
         .gt('expires_at', new Date().toISOString())
         .order('created_at', { ascending: false })
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (error) {
+        logProxyFailure('list_shares', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ data: data ?? [] })
     }
 
     if (operation === 'revoke_share') {
-      const shareId = typeof payload?.shareId === 'string' ? payload.shareId.trim() : ''
-      if (!shareId) {
-        return NextResponse.json({ error: 'Missing shareId' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const { shareId } = parseProxyPayload('revoke_share', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { error } = await supabase
         .from('shares')
         .update({ revoked_at: new Date().toISOString() })
         .eq('id', shareId)
-        .eq('owner_user_id', user.id)
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+        .eq('owner_user_id', resolved.user!.id)
+      if (error) {
+        logProxyFailure('revoke_share', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ success: true })
     }
 
     if (operation === 'get_encryption_key') {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ data: null })
+      parseProxyPayload('get_encryption_key', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return NextResponse.json({ data: null })
 
       const { data } = await supabase
         .from('encryption_keys')
-        .select('encrypted_key_blob, key_version')
-        .eq('user_id', user.id)
+        .select('encrypted_key_blob, key_salt, key_version')
+        .eq('user_id', resolved.user!.id)
         .maybeSingle()
       return NextResponse.json({ data: data ?? null })
     }
 
     if (operation === 'save_encryption_key') {
-      const encryptedKeyBlob = typeof payload?.encryptedKeyBlob === 'string' ? payload.encryptedKeyBlob : ''
-      const keyVersion = typeof payload?.keyVersion === 'number' ? payload.keyVersion : 1
-
-      if (!encryptedKeyBlob) {
-        return NextResponse.json({ error: 'Missing encryptedKeyBlob' }, { status: 400 })
-      }
-
-      const { data: user } = await supabase
-        .from('users')
-        .select('id')
-        .eq('privy_user_id', privyUserId)
-        .maybeSingle()
-      if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 })
+      const keyPayload = parseProxyPayload('save_encryption_key', payload)
+      const resolved = await resolveUserId(supabase, privyUserId)
+      if (resolved.response) return resolved.response
 
       const { error } = await supabase
         .from('encryption_keys')
         .upsert(
-          { user_id: user.id, encrypted_key_blob: encryptedKeyBlob, key_version: keyVersion },
-          { onConflict: 'user_id' }
+          {
+            user_id: resolved.user!.id,
+            encrypted_key_blob: keyPayload.encryptedKeyBlob,
+            key_salt: keyPayload.keySalt,
+            key_version: keyPayload.keyVersion ?? 1,
+          },
+          { onConflict: 'user_id' },
         )
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      if (error) {
+        logProxyFailure('save_encryption_key', error)
+        return proxyError('Something went wrong', 500)
+      }
       return NextResponse.json({ success: true })
     }
 
-    if (operation === 'get_lighthouse_key') {
-      const apiKey = process.env.LIGHTHOUSE_API_KEY
-      if (!apiKey) {
-        return NextResponse.json({ error: 'Lighthouse not configured' }, { status: 500 })
-      }
-      return NextResponse.json({ apiKey })
+    return proxyError('Invalid request', 400)
+  } catch (error) {
+    if (error instanceof ZodError) {
+      return proxyError('Invalid request', 400)
     }
 
-    return NextResponse.json({ error: 'Unknown operation' }, { status: 400 })
-  } catch (error) {
     const message = error instanceof Error ? error.message : 'Internal server error'
     console.error('Supabase proxy error:', error)
-    
-    // Return appropriate status codes based on error type
+
     if (message.includes('fetch') || message.includes('network') || message.includes('ECONNREFUSED')) {
-      return NextResponse.json({ error: 'Service unavailable' }, { status: 503 })
+      return proxyError('Service unavailable', 503)
     }
     if (message.includes('JWT') || message.includes('token') || message.includes('unauthorized')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return proxyError('Unauthorized', 401)
     }
-    if (message.includes('not found')) {
-      return NextResponse.json({ error: message }, { status: 404 })
-    }
-    
-    return NextResponse.json({ error: message }, { status: 500 })
+
+    return proxyError('Something went wrong', 500)
   }
 }

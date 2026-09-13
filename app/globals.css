@@ -4,34 +4,34 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --background: 0 0% 4%;
-  --foreground: 0 0% 96%;
-  --card: 0 0% 7%;
-  --card-foreground: 0 0% 96%;
-  --popover: 0 0% 7%;
-  --popover-foreground: 0 0% 96%;
-  --primary: 238 84% 66%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 0 0% 14%;
-  --secondary-foreground: 0 0% 96%;
-  --muted: 0 0% 14%;
-  --muted-foreground: 0 0% 47%;
-  --accent: 238 84% 66%;
-  --accent-foreground: 0 0% 100%;
-  --destructive: 0 84% 60%;
-  --destructive-foreground: 0 0% 100%;
-  --border: 0 0% 13%;
-  --input: 0 0% 13%;
-  --ring: 238 84% 66%;
-  --radius: 0.75rem;
-}
-
-.dark {
-  color-scheme: dark;
-}
-
 @layer base {
+  :root {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 96%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 96%;
+    --popover: 0 0% 7%;
+    --popover-foreground: 0 0% 96%;
+    --primary: 238 84% 66%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 96%;
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 47%;
+    --accent: 238 84% 66%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 13%;
+    --input: 0 0% 13%;
+    --ring: 238 84% 66%;
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    color-scheme: dark;
+  }
+
   * {
     @apply border-border;
   }
@@ -42,28 +42,16 @@
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
+}
 
-  /* Scrollbar */
-  ::-webkit-scrollbar {
-    width: 5px;
-  }
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--vault-bg); }
+::-webkit-scrollbar-thumb { background: var(--vault-border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3A3A3A; }
 
-  ::-webkit-scrollbar-track {
-    background: var(--vault-bg);
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: var(--vault-border-strong);
-    border-radius: 3px;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: #3A3A3A;
-  }
-
-  /* Selection */
-  ::selection {
-    background: var(--vault-accent-subtle);
-    color: var(--vault-text);
-  }
+/* Selection */
+::selection {
+  background: var(--vault-accent-subtle);
+  color: var(--vault-text);
 }

@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { Slot } from '@radix-ui/react-slot'
 import { cva, type VariantProps } from 'class-variance-authority'
+import { motion, type HTMLMotionProps } from 'framer-motion'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
@@ -29,18 +30,26 @@ const buttonVariants = cva(
   },
 )
 
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
+export type ButtonProps = React.ComponentPropsWithoutRef<'button'> & VariantProps<typeof buttonVariants> & {
   asChild?: boolean
+  whileHover?: HTMLMotionProps<'button'>['whileHover']
+  whileTap?: HTMLMotionProps<'button'>['whileTap']
+  transition?: HTMLMotionProps<'button'>['transition']
 }
 
-const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? Slot : 'button'
-    return <Comp ref={ref} className={cn(buttonVariants({ variant, size, className }))} {...props} />
+const MotionButton = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, asChild, whileHover, whileTap, transition, ...props }, ref) => {
+    const Comp = asChild ? Slot : motion.button
+    return (
+      <Comp
+        ref={ref}
+        className={cn(buttonVariants({ variant, size, className }))}
+        {...(asChild ? {} : { whileHover, whileTap, transition })}
+        {...props as any}
+      />
+    )
   },
 )
-Button.displayName = 'Button'
+MotionButton.displayName = 'Button'
 
-export { Button, buttonVariants }
+export { MotionButton as Button, buttonVariants }

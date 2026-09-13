@@ -5,6 +5,7 @@ import { useLogin, usePrivy } from '@privy-io/react-auth'
 import { useRouter } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { supabaseProxy } from '@/lib/api/supabaseProxy'
+import { lockVaultSession } from '@/lib/encryption/vaultSession'
 import type { LoginMethod } from '@/types'
 
 export function useAuth() {
@@ -43,6 +44,7 @@ export function useAuth() {
 
   const logout = useCallback(async () => {
     upsertDone.current = false
+    lockVaultSession() // drop the in-memory vault key before clearing caches
     queryClient.clear()  // ← ADD THIS LINE — clears all cached data
     await privyLogout()
   }, [privyLogout, queryClient])

@@ -2,44 +2,27 @@
 
 import { useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useQuery } from '@tanstack/react-query'
 import { X, Settings, Loader2 } from 'lucide-react'
 import { StorageStats } from './StorageStats'
 import { EncryptionInfo } from './EncryptionInfo'
-import { useAuth } from '@/hooks/useAuth'
+import { useStorageStats } from '@/hooks/useStorageStats'
 
 interface SettingsDrawerProps {
   isOpen: boolean
   onClose: () => void
 }
 
-async function fetchStorageStats() {
-  const response = await fetch('/api/storage-stats', {
-    credentials: 'same-origin',
-  })
-
-  if (!response.ok) {
-    throw new Error('Failed to load storage stats')
-  }
-
-  const data = await response.json()
-  return {
-    totalFiles: data.totalFiles,
-    totalEncryptedSize: data.totalEncryptedSize,
-    totalOriginalSize: data.totalOriginalSize,
-  }
-}
-
 export function SettingsDrawer({ isOpen, onClose }: SettingsDrawerProps) {
-  const { ready, authenticated } = useAuth()
+  const { totalFiles, totalEncryptedBytes, totalOriginalBytes, isLoading, error } = useStorageStats()
 
-  const { data: stats, isLoading, error } = useQuery({
-    queryKey: ['storage-stats'],
-    queryFn: fetchStorageStats,
-    enabled: isOpen && ready && authenticated,
-    retry: false,
-    staleTime: 30_000,
-  })
+  const stats =
+    !isLoading && !error
+      ? {
+          totalFiles,
+          totalEncryptedSize: totalEncryptedBytes,
+          totalOriginalSize: totalOriginalBytes,
+        }
+      : null
 
   // Escape key support
   useEffect(() => {
@@ -95,7 +78,12 @@ export function SettingsDrawer({ isOpen, onClose }: SettingsDrawerProps) {
             {/* Content list */}
             <div className="space-y-6">
               {/* Storage Stats Section */}
-              <div className="space-y-3">
+              <motion.div
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.2, duration: 0.3 }}
+                className="space-y-3"
+              >
                 <h3 className="text-xs uppercase font-mono tracking-widest text-muted-foreground">Storage Overview</h3>
                 {isLoading ? (
                   <div className="flex items-center justify-center py-10 border border-[#222222] bg-card rounded-xl">
@@ -113,13 +101,18 @@ export function SettingsDrawer({ isOpen, onClose }: SettingsDrawerProps) {
                     totalOriginalSize={stats.totalOriginalSize}
                   />
                 ) : null}
-              </div>
+              </motion.div>
 
               {/* Encryption Info Section */}
-              <div className="space-y-3">
+              <motion.div
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.4, duration: 0.3 }}
+                className="space-y-3"
+              >
                 <h3 className="text-xs uppercase font-mono tracking-widest text-muted-foreground">Security Standards</h3>
                 <EncryptionInfo />
-              </div>
+              </motion.div>
             </div>
           </motion.div>
         </div>

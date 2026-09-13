@@ -1,11 +1,12 @@
 'use client'
 
 import { useEffect, useMemo, useRef } from 'react'
+import { motion } from 'framer-motion'
 import { Lock, Upload } from 'lucide-react'
 import { GalleryItem } from '@/components/gallery/GalleryItem'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
+import { Skeleton, SkeletonCard } from '@/components/ui/skeleton'
 import { formatDate } from '@/lib/utils/format'
 import type { BackupRecord } from '@/types'
 
@@ -24,18 +25,6 @@ type GroupedBackups = Array<{
   label: string
   items: BackupRecord[]
 }>
-
-function LoadingCard() {
-  return (
-    <div className="break-inside-avoid overflow-hidden rounded-2xl border border-vault-border bg-vault-surface shadow-soft">
-      <Skeleton className="aspect-[4/3] w-full rounded-none" />
-      <div className="space-y-2 p-4">
-        <Skeleton className="h-4 w-2/3" />
-        <Skeleton className="h-3 w-1/2" />
-      </div>
-    </div>
-  )
-}
 
 function groupByDate(backups: BackupRecord[]): GroupedBackups {
   const groups = new Map<string, BackupRecord[]>()
@@ -94,7 +83,7 @@ export function GalleryGrid({
     return (
       <div className="columns-2 gap-3 md:columns-3 lg:columns-4 xl:columns-5">
         {Array.from({ length: 10 }).map((_, index) => (
-          <LoadingCard key={index} />
+          <SkeletonCard key={index} />
         ))}
       </div>
     )
@@ -102,28 +91,52 @@ export function GalleryGrid({
 
   if (backups.length === 0) {
     return (
-      <Card className="border-vault-border border-dashed bg-vault-surface">
-        <CardContent className="flex flex-col items-center justify-center gap-4 py-16 text-center">
-          <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-vault-accent/10">
-            <Lock className="h-9 w-9 text-vault-accent" />
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-lg font-medium text-vault-text">Your vault is empty</h2>
-            <p className="max-w-md text-sm text-vault-text-muted">
-              Upload your first photos to get started. They will be encrypted on-device before they ever leave your device.
-            </p>
-          </div>
-          <Button
-            type="button"
-            onClick={onUploadClick}
-            className="bg-vault-accent text-white hover:bg-vault-accent-hover"
-            disabled={!onUploadClick}
-          >
-            <Upload className="h-4 w-4" />
-            Upload Photos
-          </Button>
-        </CardContent>
-      </Card>
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] }}
+      >
+        <Card className="border-vault-border border-dashed bg-vault-surface">
+          <CardContent className="flex flex-col items-center justify-center gap-4 py-16 text-center">
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ delay: 0.1, type: 'spring', damping: 15, stiffness: 200 }}
+              className="flex h-20 w-20 items-center justify-center rounded-2xl bg-vault-accent/10"
+            >
+              <Lock className="h-9 w-9 text-vault-accent" />
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2, duration: 0.3 }}
+              className="space-y-2"
+            >
+              <h2 className="text-lg font-medium text-vault-text">Your vault is empty</h2>
+              <p className="max-w-md text-sm text-vault-text-muted">
+                Upload your first photos to get started. They will be encrypted on-device before they ever leave your device.
+              </p>
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3, duration: 0.3 }}
+            >
+              <Button
+                type="button"
+                onClick={onUploadClick}
+                className="bg-vault-accent text-white hover:bg-vault-accent-hover"
+                disabled={!onUploadClick}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.97 }}
+              >
+                <Upload className="h-4 w-4" />
+                Upload Photos
+              </Button>
+            </motion.div>
+          </CardContent>
+        </Card>
+      </motion.div>
     )
   }
 
@@ -131,17 +144,28 @@ export function GalleryGrid({
     <div className="space-y-4">
       {groups.map((group, index) => (
         <section key={group.label}>
-          <h2 className="mb-3 mt-6 text-sm font-medium text-vault-text-muted first:mt-0">
+          <motion.h2
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: index * 0.05, duration: 0.3 }}
+            className="mb-3 mt-6 text-sm font-medium text-vault-text-muted first:mt-0"
+          >
             {group.label} <span className="text-vault-border-strong">({group.items.length})</span>
-          </h2>
+          </motion.h2>
           <div className="columns-2 gap-3 md:columns-3 lg:columns-4 xl:columns-5">
-            {group.items.map((backup) => (
-              <GalleryItem
+            {group.items.map((backup, itemIndex) => (
+              <motion.div
                 key={backup.id}
-                backup={backup}
-                onSelect={onSelectBackup}
-                onDeleted={onRefresh}
-              />
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: itemIndex * 0.03, duration: 0.25, ease: [0.25, 0.46, 0.45, 0.94] }}
+              >
+                <GalleryItem
+                  backup={backup}
+                  onSelect={onSelectBackup}
+                  onDeleted={onRefresh}
+                />
+              </motion.div>
             ))}
           </div>
 

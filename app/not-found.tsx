@@ -11,7 +11,7 @@ export default function NotFound() {
           <CardDescription>The page you asked for does not exist in Vaultly.</CardDescription>
         </CardHeader>
         <CardContent>
-          <Button asChild>
+          <Button variant="outline" asChild>
             <Link href="/gallery">Return to gallery</Link>
           </Button>
         </CardContent>

@@ -21,9 +21,6 @@ export const supabaseProxy = {
   checkDuplicate: (token: string, originalHash: string) =>
     callProxy(token, 'check_duplicate', { originalHash }),
 
-  getLighthouseKey: (token: string) =>
-    callProxy(token, 'get_lighthouse_key'),
-
   upsertUser: (token: string, email: string | null) =>
     callProxy(token, 'upsert_user', { email }),
 
@@ -84,6 +81,6 @@ export const supabaseProxy = {
   getEncryptionKey: (token: string) =>
     callProxy(token, 'get_encryption_key'),
 
-  saveEncryptionKey: (token: string, encryptedKeyBlob: string, keyVersion = 1) =>
-    callProxy(token, 'save_encryption_key', { encryptedKeyBlob, keyVersion }),
+  saveEncryptionKey: (token: string, encryptedKeyBlob: string, keySalt: string, keyVersion = 1) =>
+    callProxy(token, 'save_encryption_key', { encryptedKeyBlob, keySalt, keyVersion }),
 }

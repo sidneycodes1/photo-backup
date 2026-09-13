@@ -1,3 +1,8 @@
+// Share creation: decrypts with the vault key, re-encrypts under a fresh
+// per-share AES-GCM key, uploads a new ciphertext CID, and embeds the raw key
+// in the URL fragment only. Trust boundary: the server stores the share CID +
+// IV but never sees the share key or the vault key — fragment keys stay local.
+
 import { decryptFile } from '@/lib/encryption'
 import { fetchWithRetry } from '@/lib/lighthouse/retrieve'
 import { uploadToLighthouse } from '@/lib/lighthouse/client'

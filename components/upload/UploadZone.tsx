@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
 import Uppy from '@uppy/core'
 import { FolderOpen, Loader2, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
@@ -111,12 +112,10 @@ export function UploadZone({ onFilesReady, onComplete, isUploading = false }: Up
         })
         .catch((error: Error) => {
           if (error.name !== 'AbortError') {
-            // Fallback to regular input
             inputRef.current?.click()
           }
         })
     } else {
-      // Firefox/Safari fallback
       inputRef.current?.click()
     }
   }, [addFiles])
@@ -244,7 +243,7 @@ export function UploadZone({ onFilesReady, onComplete, isUploading = false }: Up
           }}
         />
 
-        <div
+        <motion.div
           className="flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-vault-border-strong bg-vault-bg p-12 transition-colors hover:border-vault-accent/60"
           onClick={handleClick}
           onDragOver={(event) => event.preventDefault()}
@@ -252,10 +251,17 @@ export function UploadZone({ onFilesReady, onComplete, isUploading = false }: Up
             event.preventDefault()
             addFiles(Array.from(event.dataTransfer.files))
           }}
+          whileHover={{ borderColor: 'rgba(99,102,241,0.4)' }}
+          whileTap={{ scale: 0.99 }}
         >
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-vault-accent/10 text-vault-accent">
+          <motion.div
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.4, ease: [0.34, 1.56, 0.64, 1] }}
+            className="flex h-14 w-14 items-center justify-center rounded-2xl bg-vault-accent/10 text-vault-accent"
+          >
             <Upload className="h-7 w-7" />
-          </div>
+          </motion.div>
 
           <div className="space-y-1 text-center">
             <p className="font-medium text-vault-text">Drop photos and videos here</p>
@@ -276,21 +282,27 @@ export function UploadZone({ onFilesReady, onComplete, isUploading = false }: Up
             }}
             disabled={isUploading || isProcessing}
             className="gap-2 bg-vault-accent text-white hover:bg-vault-accent-hover"
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.97 }}
           >
             <FolderOpen className="h-4 w-4" />
             Choose Files
           </Button>
 
           <p className="text-xs text-vault-text-muted">JPG, PNG, HEIC, MP4, MOV and more</p>
-        </div>
+        </motion.div>
 
         {localError ? (
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-vault-error/30 bg-vault-error/10 px-4 py-3 text-sm text-vault-error">
+          <motion.div
+            initial={{ opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex items-center justify-between gap-3 rounded-xl border border-vault-error/30 bg-vault-error/10 px-4 py-3 text-sm text-vault-error"
+          >
             <span>{localError}</span>
             <button type="button" onClick={() => setLocalError(null)} className="text-vault-error/80">
               <X className="h-4 w-4" />
             </button>
-          </div>
+          </motion.div>
         ) : null}
 
         {encryptionError ? (
@@ -317,6 +329,8 @@ export function UploadZone({ onFilesReady, onComplete, isUploading = false }: Up
             }}
             disabled={uploadQueue.length === 0 || isProcessing}
             className="border-vault-border-strong bg-transparent text-vault-text-muted hover:border-vault-accent hover:text-vault-accent"
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.97 }}
           >
               Clear
             </Button>
@@ -326,6 +340,8 @@ export function UploadZone({ onFilesReady, onComplete, isUploading = false }: Up
               className="gap-2 bg-vault-accent text-white hover:bg-vault-accent-hover"
               onClick={() => void handleStartBackup()}
               disabled={!ready || !authenticated || !isReady || !cryptoKey || uploadQueue.length === 0 || isProcessing}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.97 }}
             >
               {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
               Start Backup

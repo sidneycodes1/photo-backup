@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { motion } from 'framer-motion'
 import { useMutation } from '@tanstack/react-query'
 import { usePrivy } from '@privy-io/react-auth'
 import { useEncryption } from '@/hooks/useEncryption'
@@ -33,7 +34,7 @@ const EXPIRY_OPTIONS = [
 export function ShareModal({ open, onOpenChange, backup }: ShareModalProps) {
   const { getAccessToken } = usePrivy()
   const { cryptoKey } = useEncryption()
-  const [expiresInHours, setExpiresInHours] = useState(168) // Default 7 days
+  const [expiresInHours, setExpiresInHours] = useState(168)
   const [shareUrl, setShareUrl] = useState<string | null>(null)
 
   const createShareMutation = useMutation({
@@ -70,20 +71,37 @@ export function ShareModal({ open, onOpenChange, backup }: ShareModalProps) {
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="border-vault-border bg-vault-surface">
         <DialogHeader>
-          <DialogTitle className="text-vault-text">Share Securely</DialogTitle>
-          <DialogDescription className="text-vault-text-muted">
+          <motion.h3
+            initial={{ opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="text-vault-text"
+          >
+            Share Securely
+          </motion.h3>
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.1, duration: 0.2 }}
+            className="text-vault-text-muted"
+          >
             Create an expiring link to share this file. The recipient doesn&apos;t need a Vaultly account.
-          </DialogDescription>
+          </motion.p>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
           {!shareUrl ? (
             <>
-              <div className="space-y-2">
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.15, duration: 0.2 }}
+                className="space-y-2"
+              >
                 <label className="text-sm font-medium text-vault-text">Link expires in</label>
                 <div className="grid grid-cols-2 gap-2">
                   {EXPIRY_OPTIONS.map((option) => (
-                    <button
+                    <motion.button
                       key={option.value}
                       type="button"
                       onClick={() => setExpiresInHours(option.value)}
@@ -92,23 +110,38 @@ export function ShareModal({ open, onOpenChange, backup }: ShareModalProps) {
                           ? 'border-vault-accent bg-vault-accent/10 text-vault-text'
                           : 'border-vault-border bg-vault-bg text-vault-text-muted hover:bg-vault-surface-hover'
                       }`}
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.97 }}
                     >
                       {option.label}
-                    </button>
+                    </motion.button>
                   ))}
                 </div>
-              </div>
+              </motion.div>
 
-              <Button
-                onClick={handleCreateShare}
-                disabled={createShareMutation.isPending}
-                className="w-full bg-vault-accent text-vault-bg hover:bg-vault-accent/90"
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25, duration: 0.2 }}
               >
-                {createShareMutation.isPending ? 'Creating link...' : 'Create link'}
-              </Button>
+                <Button
+                  onClick={handleCreateShare}
+                  disabled={createShareMutation.isPending}
+                  className="w-full bg-vault-accent text-vault-bg hover:bg-vault-accent/90"
+                  whileHover={{ scale: 1.01 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  {createShareMutation.isPending ? 'Creating link...' : 'Create link'}
+                </Button>
+              </motion.div>
             </>
           ) : (
-            <div className="space-y-3">
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.15, duration: 0.2 }}
+              className="space-y-3"
+            >
               <div className="flex items-center gap-2">
                 <div className="flex-1 rounded-lg border border-vault-border bg-vault-bg p-3">
                   <p className="truncate text-sm text-vault-text-muted">{shareUrl}</p>
@@ -119,7 +152,7 @@ export function ShareModal({ open, onOpenChange, backup }: ShareModalProps) {
                 This link expires in {EXPIRY_OPTIONS.find((o) => o.value === expiresInHours)?.label}. 
                 Anyone with the link can view the file.
               </p>
-            </div>
+            </motion.div>
           )}
         </div>
 
@@ -128,6 +161,7 @@ export function ShareModal({ open, onOpenChange, backup }: ShareModalProps) {
             variant="outline"
             onClick={handleClose}
             className="border-vault-border text-vault-text hover:bg-vault-surface-hover"
+            whileTap={{ scale: 0.97 }}
           >
             Close
           </Button>

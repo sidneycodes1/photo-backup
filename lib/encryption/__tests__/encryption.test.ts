@@ -1,9 +1,32 @@
 import { webcrypto } from 'node:crypto'
 import { Blob as NodeBlob, File as NodeFile } from 'node:buffer'
-import { beforeAll, describe, expect, test } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 import { decryptFile } from '../fileDecryption'
 import { encryptFile, generateIV } from '../fileEncryption'
-import { deriveKeyBytesFromPrivyUser } from '../keyManagement'
+
+const keyStore = vi.hoisted(() => ({ row: null as null | Record<string, unknown> }))
+
+vi.mock('@/lib/api/supabaseProxy', () => ({
+  supabaseProxy: {
+    getEncryptionKey: vi.fn(async () => ({ data: keyStore.row })),
+    saveEncryptionKey: vi.fn(
+      async (_token: string, encryptedKeyBlob: string, keySalt: string, keyVersion = 1) => {
+        keyStore.row = { encrypted_key_blob: encryptedKeyBlob, key_salt: keySalt, key_version: keyVersion }
+        return { success: true }
+      },
+    ),
+  },
+}))
+
+import {
+  deriveWrappingKeyFromPassphrase,
+  exportEncryptedKey,
+  generatePassphraseSalt,
+  hasUsableVaultKey,
+  setupVaultKey,
+  unlockVaultKey,
+  validatePassphrase,
+} from '../keyManagement'
 
 function ensureWebCrypto() {
   const currentCrypto = globalThis.crypto as Crypto | undefined
@@ -69,6 +92,10 @@ beforeAll(() => {
   ensureWebCrypto()
 })
 
+beforeEach(() => {
+  keyStore.row = null
+})
+
 describe('Vaultly encryption engine', () => {
   test('small file encrypts and decrypts back to the original bytes', async () => {
     const originalBytes = randomBytes(1024)
@@ -119,11 +146,72 @@ describe('Vaultly encryption engine', () => {
     expect(values.size).toBe(1000)
   })
 
-  test('key derivation is deterministic for the same Privy user ID', async () => {
-    const first = await deriveKeyBytesFromPrivyUser('did:privy:user:123')
-    const second = await deriveKeyBytesFromPrivyUser('did:privy:user:123')
+  test('validatePassphrase enforces length and character-class rules', () => {
+    expect(validatePassphrase('short1!A').ok).toBe(false)
+    expect(validatePassphrase('alllowercaseletters').ok).toBe(false)
+    expect(validatePassphrase('LongEnoughButOnlyLower').ok).toBe(false)
+    expect(validatePassphrase('Correct-Horse-9').ok).toBe(true)
+  })
 
-    expect(Array.from(first)).toEqual(Array.from(second))
-    expect(first).toHaveLength(32)
+  test('passphrase setup then unlock round-trips to the same vault key', async () => {
+    const created = await setupVaultKey('Correct-Horse-9', 'Correct-Horse-9', 'test-token')
+    expect(await hasUsableVaultKey('test-token')).toBe(true)
+
+    // Unwrapped keys are non-extractable by design, so equality is proven
+    // behaviorally: each key decrypts what the other encrypted.
+    const unlocked = await unlockVaultKey('Correct-Horse-9', 'test-token')
+    const originalBytes = randomBytes(512)
+    const file = new File([toArrayBuffer(originalBytes)], 'vault.bin', { type: 'application/octet-stream' })
+
+    const encryptedByCreated = await encryptFile(file, created)
+    const decryptedByUnlocked = await decryptFile(
+      encryptedByCreated.encryptedBlob,
+      unlocked,
+      encryptedByCreated.iv,
+      file.type,
+    )
+    await expectBlobBytesToMatch(decryptedByUnlocked, originalBytes)
+
+    const encryptedByUnlocked = await encryptFile(file, unlocked)
+    const decryptedByCreated = await decryptFile(
+      encryptedByUnlocked.encryptedBlob,
+      created,
+      encryptedByUnlocked.iv,
+      file.type,
+    )
+    await expectBlobBytesToMatch(decryptedByCreated, originalBytes)
+  })
+
+  test('unlock with the wrong passphrase fails closed', async () => {
+    await setupVaultKey('Correct-Horse-9', 'Correct-Horse-9', 'test-token')
+    await expect(unlockVaultKey('Wrong-Horse-000', 'test-token')).rejects.toThrow('Incorrect passphrase')
+  })
+
+  test('setup rejects mismatched confirmation and weak passphrases', async () => {
+    await expect(setupVaultKey('Correct-Horse-9', 'Different-Horse-9', 'test-token')).rejects.toThrow(
+      'do not match',
+    )
+    await expect(setupVaultKey('weak', 'weak', 'test-token')).rejects.toThrow()
+    expect(await hasUsableVaultKey('test-token')).toBe(false)
+  })
+
+  test('salts are unique per vault and mismatched salts cannot unwrap', async () => {
+    const saltA = generatePassphraseSalt()
+    const saltB = generatePassphraseSalt()
+    expect(Buffer.from(saltA)).not.toEqual(Buffer.from(saltB))
+
+    const wrappingA = await deriveWrappingKeyFromPassphrase('Correct-Horse-9', saltA)
+    const wrappingB = await deriveWrappingKeyFromPassphrase('Correct-Horse-9', saltB)
+    const master = await createTestKey()
+    const blob = await exportEncryptedKey(master, wrappingA)
+
+    const { importEncryptedKey } = await import('../keyManagement')
+    await expect(importEncryptedKey(blob, wrappingB)).rejects.toThrow()
+  })
+
+  test('pre-passphrase rows without a salt count as unusable', async () => {
+    keyStore.row = { encrypted_key_blob: 'legacy-blob', key_salt: null, key_version: 1 }
+    expect(await hasUsableVaultKey('test-token')).toBe(false)
+    await expect(unlockVaultKey('Correct-Horse-9', 'test-token')).rejects.toThrow('Set up a vault passphrase')
   })
 })

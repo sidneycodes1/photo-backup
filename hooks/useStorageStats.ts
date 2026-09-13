@@ -65,7 +65,10 @@ export function useStorageStats() {
 
   return {
     isLoading: query.isLoading,
+    error: query.error instanceof Error ? query.error : null,
     totalFiles: data?.totalFiles ?? 0,
+    totalEncryptedBytes: data?.totalEncryptedBytes ?? 0,
+    totalOriginalBytes: data?.totalOriginalBytes ?? 0,
     photoCount: data?.photoCount ?? 0,
     videoCount: data?.videoCount ?? 0,
     percentUsed: data?.percentUsed ?? 0,

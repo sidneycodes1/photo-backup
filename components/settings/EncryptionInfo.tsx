@@ -11,9 +11,9 @@ export function EncryptionInfo() {
       <CardContent className="grid gap-3 md:grid-cols-3">
         <div className="rounded-2xl border border-border bg-background p-4">
           <Shield className="h-5 w-5 text-primary" />
-          <p className="mt-3 text-sm font-medium">Only you control the key</p>
+          <p className="mt-3 text-sm font-medium">Only your passphrase unlocks it</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            The vault key is wrapped with your Privy identity and never stored raw on the server.
+            The vault key is wrapped with a key derived from your passphrase (PBKDF2, 600,000 iterations) and never stored raw anywhere.
           </p>
         </div>
         <div className="rounded-2xl border border-border bg-background p-4">
@@ -25,9 +25,9 @@ export function EncryptionInfo() {
         </div>
         <div className="rounded-2xl border border-border bg-background p-4">
           <KeyRound className="h-5 w-5 text-primary" />
-          <p className="mt-3 text-sm font-medium">Key refresh is local</p>
+          <p className="mt-3 text-sm font-medium">Locked every session</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Regenerating your key only rewrites the wrapped key blob. It does not send raw key material to Vaultly.
+            The unwrapped key lives only in this tab&apos;s memory. It is cleared on logout or tab close — unlocking takes your passphrase each time.
           </p>
         </div>
       </CardContent>
